@@ -21,7 +21,7 @@ dependencies = [
     "python-dateutil",
     "rasters",
     "sentinel-tiles",
-    "VIIRS-Swath-Granules>=1.1.0"
+    "VIIRS-Swath-Granules>=1.1.1"
 ]
 
 requires-python = ">=3.10"
