@@ -2,11 +2,14 @@ from typing import Union, List
 
 import numpy as np
 
-from rasters import Raster, RasterGeometry
+from rasters import Raster, RasterGeometry, RasterGeolocation
 
 from VIIRS_swath_granules import VIIRSSwathGranule
 
 from .constants import SWATH_NAME
+from .read_latitude import read_latitude
+from .read_longitude import read_longitude
+from .read_geometry import read_geometry
 
 class VNP21IMGNRTGranule(VIIRSSwathGranule):
     def __init__(self, filename: Union[str, VIIRSSwathGranule]):
@@ -24,6 +27,38 @@ class VNP21IMGNRTGranule(VIIRSSwathGranule):
         
         super().__init__(filename)
 
+        self._geometry = None
+
+    @property
+    def geometry(self) -> RasterGeolocation:
+        """
+        Return the geometry of the granule, which includes latitude and longitude.
+        """
+        if self._geometry is None:
+            self._geometry = read_geometry(self.filename_absolute)
+
+        return self._geometry
+    
+    @property
+    def latitude(self) -> np.ndarray:
+        """
+        Return the latitude array of the granule.
+        """
+        if self._geometry is not None:
+            return self._geometry.y
+        else:
+            return read_latitude(self.filename_absolute)
+
+    @property
+    def longitude(self) -> np.ndarray:
+        """
+        Return the longitude array of the granule.
+        """
+        if self._geometry is not None:
+            return self._geometry.x
+        else:
+            return read_longitude(self.filename_absolute)
+
     def variables(self, swath: str = SWATH_NAME) -> List[str]:
         """
         Return the list of variables in a specific swath.
@@ -31,10 +66,6 @@ class VNP21IMGNRTGranule(VIIRSSwathGranule):
         :param swath: The swath name.
         """
         return super().variables(swath=swath)
-
-    @property
-    def latitude(self) -> np.ndarray:
-        return self.read_latitude(swath=SWATH_NAME)
 
     def get_QC(self, geometry: RasterGeometry = None, resampling: str = "nearest") -> Raster:
         """
