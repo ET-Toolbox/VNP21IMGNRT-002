@@ -17,19 +17,23 @@ classifiers = [
 dependencies = [
     "colored-logging",
     "earthaccess",
-    "modland>=1.1.0",
+    "modland",
     "python-dateutil",
     "rasters",
     "sentinel-tiles",
-    "VIIRS-Swath-Granules>=1.0.1"
+    "VIIRS-Swath-Granules>=1.1.1"
 ]
 
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 [project.optional-dependencies]
 dev = [
+    "build",
     "pytest>=6.0",
     "pytest-cov",
+    "jupyter",
+    "pytest",
+    "twine"
 ]
 
 [tool.setuptools.package-data]
