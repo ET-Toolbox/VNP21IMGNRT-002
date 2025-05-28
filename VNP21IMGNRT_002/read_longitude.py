@@ -4,6 +4,8 @@ import numpy as np
 import netCDF4
 import rasters as rt
 
+from .constants import *
+
 def read_longitude(filename: str) -> np.ndarray:
     """
     Reads the longitude array from a VNP21IMG-NRT product NetCDF file.
@@ -22,7 +24,7 @@ def read_longitude(filename: str) -> np.ndarray:
     # Open the NetCDF file, expanding user (~) in the path if present
     with netCDF4.Dataset(expanduser(filename)) as file:
         # Access the longitude dataset within the file
-        dataset = file["VIIRS_I5_LST/Geolocation Fields/Longitude"]
+        dataset = file[f"{SWATH_NAME}/Geolocation Fields/Longitude"]
         fill_value = dataset._FillValue
 
         # Suppress warnings that may arise from reading the dataset
