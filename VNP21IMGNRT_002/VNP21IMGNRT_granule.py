@@ -1,12 +1,21 @@
 from typing import Union, List
-
+from os.path import expanduser
 import numpy as np
 
-from rasters import Raster, RasterGeometry
+import netCDF4
+
+import rasters as rt
+from rasters import Raster, RasterGeometry, RasterGeolocation
 
 from VIIRS_swath_granules import VIIRSSwathGranule
 
 from .constants import SWATH_NAME
+from .read_latitude import read_latitude
+from .read_longitude import read_longitude
+from .read_geometry import read_geometry
+from .read_QC import read_QC
+from .read_DN import read_DN
+from .read_layer import read_layer
 
 class VNP21IMGNRTGranule(VIIRSSwathGranule):
     def __init__(self, filename: Union[str, VIIRSSwathGranule]):
@@ -24,283 +33,169 @@ class VNP21IMGNRTGranule(VIIRSSwathGranule):
         
         super().__init__(filename)
 
-    def variables(self, swath: str = SWATH_NAME) -> List[str]:
+        self._geometry = None
+        self._QC = None
+
+    @property
+    def geometry(self) -> RasterGeolocation:
+        """
+        Return the geometry of the granule, which includes latitude and longitude.
+        """
+        if self._geometry is None:
+            self._geometry = read_geometry(self.filename_absolute)
+
+        return self._geometry
+    
+    @property
+    def latitude(self) -> np.ndarray:
+        """
+        Return the latitude array of the granule.
+        """
+        if self._geometry is not None:
+            return self._geometry.y
+        else:
+            return read_latitude(self.filename_absolute)
+
+    lat = latitude
+
+    @property
+    def longitude(self) -> np.ndarray:
+        """
+        Return the longitude array of the granule.
+        """
+        if self._geometry is not None:
+            return self._geometry.x
+        else:
+            return read_longitude(self.filename_absolute)
+
+    lon = longitude
+
+    @property
+    def QC(self) -> Raster:
+        """
+        Return the Quality Control (QC) data as a Raster object.
+        """
+        if self._QC is None:
+            self._QC = read_QC(self.filename_absolute, geometry=self.geometry)
+        
+        return self._QC
+    
+    @property
+    def cloud(self) -> Raster:
+        """
+        Return the cloud mask as a Raster object.
+        """
+        return Raster(((np.array(self.QC) >> 4) & 3) > 0, geometry=self.geometry)
+    
+    @property
+    def variables(self) -> List[str]:
         """
         Return the list of variables in a specific swath.
 
         :param swath: The swath name.
         """
-        return super().variables(swath=swath)
+        return super().variables(swath=SWATH_NAME)
 
-    @property
-    def latitude(self) -> np.ndarray:
-        return self.read_latitude(swath=SWATH_NAME)
-
-    def get_QC(self, geometry: RasterGeometry = None, resampling: str = "nearest") -> Raster:
+    def DN(self, variable: str) -> Raster:
         """
-        Get the Quality Control (QC) data as a Raster object.
+        Read a specific variable as Digital Number (DN) from the granule.
 
-        :param geometry: The target geometry for resampling.
-        :param resampling: The resampling method.
+        :param variable: The name of the variable to read.
+        :return: A Raster object containing the DN data for the specified variable.
         """
-        with h5py.File(self.filename_absolute, "r") as f:
-            dataset_name = f"{SWATH_NAME}/QC"
-            QC = np.array(f[dataset_name])
-            h, v = self.hv
-            grid = generate_modland_grid(h, v, QC.shape[0])
+        if variable not in self.variables:
+            raise ValueError(f"Variable '{variable}' not found in granule {self.filename}")
 
-            logger.info("opening VIIRS file: " + colored_logging.file(self.filename))
-
-            logger.info(
-                f"loading {colored_logging.val(dataset_name)} " +
-                "at " + colored_logging.val(f"{grid.cell_size:0.2f} m") + " resolution"
-            )
-
-            QC = Raster(QC, geometry=grid)
-
-        if geometry is not None:
-            QC = QC.to_geometry(geometry, resampling=resampling)
-
-        return QC
-
-    QC = property(get_QC)
-
-    def get_cloud_mask(self, target_shape: tuple = None) -> Raster:
-        """
-        Get the cloud mask as a Raster object.
-
-        :param target_shape: The target shape for resizing.
-        """
-        h, v = self.hv
-
-        if self._cloud_mask is None:
-            QC = self.QC
-            cloud_mask = ((QC >> 4) & 3) > 0
-            self._cloud_mask = cloud_mask
-        else:
-            cloud_mask = self._cloud_mask
-
-        if target_shape is not None:
-            cloud_mask = resize(cloud_mask, target_shape, order=0).astype(bool)
-            shape = target_shape
-        else:
-            shape = cloud_mask.shape
-
-        geometry = generate_modland_grid(h, v, shape[0])
-        cloud_mask = Raster(cloud_mask, geometry=geometry)
-
-        return cloud_mask
-
-    cloud_mask = property(get_cloud_mask)
-
-    def dataset(
-            self,
-            filename: str,
-            dataset_name: str,
-            scale_factor: float = 1,
-            offset: float = 0,
-            fill: float = None,
-            lower_range: float = None,
-            upper_range: float = None,
-            cloud_mask: Raster = None,
-            apply_cloud_mask: bool = True,
-            geometry: RasterGeometry = None,
-            resampling: str = None) -> Raster:
-        """
-        Get a dataset as a Raster object.
-
-        :param filename: The filename of the dataset.
-        :param dataset_name: The name of the dataset.
-        :param scale_factor: The scale factor to apply.
-        :param offset: The offset to apply.
-        :param fill: The fill value to replace with NaN.
-        :param lower_range: The lower range for valid data.
-        :param upper_range: The upper range for valid data.
-        :param cloud_mask: The cloud mask to apply.
-        :param apply_cloud_mask: Whether to apply the cloud mask.
-        :param geometry: The target geometry for resampling.
-        :param resampling: The resampling method.
-        """
-        filename = abspath(expanduser(filename))
-
-        with h5py.File(filename, "r") as f:
-            DN = np.array(f[dataset_name])
-            h, v = self.hv
-            grid = generate_modland_grid(h, v, DN.shape[0])
-
-            logger.info("opening VIIRS file: " + colored_logging.file(self.filename))
-
-            logger.info(
-                f"loading {colored_logging.val(dataset_name)} " +
-                "at " + colored_logging.val(f"{grid.cell_size:0.2f} m") + " resolution"
-            )
-
-            DN = Raster(DN, geometry=grid)
-
-        data = DN
-
-        if fill is not None:
-            data = np.where(data == fill, np.nan, data)
-
-        if lower_range is not None:
-            data = np.where(data < lower_range, np.nan, data)
-
-        if upper_range is not None:
-            data = np.where(data > upper_range, np.nan, data)
-
-        data = data * scale_factor + offset
-
-        if apply_cloud_mask:
-            if cloud_mask is None:
-                cloud_mask = self.get_cloud_mask(target_shape=data.shape)
-
-            data = rt.where(cloud_mask, np.nan, data)
-
-        if geometry is not None:
-            data = data.to_geometry(geometry, resampling=resampling)
-
-        return data
-
-    @property
-    def geometry(self) -> RasterGrid:
-        """
-        Return the geometry of the granule.
-        """
-        return generate_modland_grid(*self.hv, 1200)
-
-    def get_Emis_14(self, geometry: RasterGeometry = None) -> Raster:
-        """
-        Get the Emissivity Band 14 data as a Raster object.
-
-        :param geometry: The target geometry for resampling.
-        """
-        image = self.dataset(
-            self.filename_absolute,
-            f"HDFEOS/GRIDS/VIIRS_Grid_Daily_1km_LST21/Data Fields/Emis_14",
-            scale_factor=0.002,
-            offset=0.49,
-            cloud_mask=None,
-            apply_cloud_mask=False
-        )
-
-        if np.all(np.isnan(image)):
-            raise ValueError("blank emissivity band 14 image")
+        DN = read_DN(filename=self.filename_absolute, layer=variable, geometry=self.geometry)
         
-        if geometry is not None:
-            image = image.to_geometry(geometry)
+        return DN
+    
+    def scale(self, variable: str):
+        with netCDF4.Dataset(self.filename_absolute) as file:
+            return file[f"{SWATH_NAME}/Data Fields/{variable}"].scale_factor
 
-        return image
+    def offset(self, variable: str):
+        with netCDF4.Dataset(self.filename_absolute) as file:
+            return file[f"{SWATH_NAME}/Data Fields/{variable}"].add_offset
+        
+    def fill(self, variable: str):
+        with netCDF4.Dataset(self.filename_absolute) as file:
+            return file[f"{SWATH_NAME}/Data Fields/{variable}"]._FillValue
 
-    Emis_14 = property(get_Emis_14)
-
-    def get_Emis_15(self, geometry: RasterGeometry = None) -> Raster:
+    def read(
+            self, 
+            variable: str, 
+            apply_cloud: bool = False,
+            scale = None,
+            offset = None,
+            fill = None,
+            upper = None,
+            lower = None) -> Raster:
         """
-        Get the Emissivity Band 15 data as a Raster object.
+        Read a specific variable from the granule.
 
-        :param geometry: The target geometry for resampling.
+        :param variable: The name of the variable to read.
+        :return: A Raster object containing the data for the specified variable.
         """
-        image = self.dataset(
-            self.filename_absolute,
-            f"HDFEOS/GRIDS/VIIRS_Grid_Daily_1km_LST21/Data Fields/Emis_15",
-            scale_factor=0.002,
-            offset=0.49,
-            cloud_mask=None,
-            apply_cloud_mask=False
+        if variable not in self.variables:
+            raise ValueError(f"Variable '{variable}' not found in granule {self.filename}")
+
+        layer = read_layer(
+            filename=self.filename_absolute, 
+            layer=variable, 
+            geometry=self.geometry,
+            scale=scale,
+            offset=offset,
+            fill=fill,
+            upper=upper,
+            lower=lower
         )
 
-        if np.all(np.isnan(image)):
-            raise ValueError("blank emissivity band 15 image")
-
-        if geometry is not None:
-            image = image.to_geometry(geometry)
-
-        return image
-
-    Emis_15 = property(get_Emis_15)
-
-    def get_Emis_16(self, geometry: RasterGeometry = None) -> Raster:
+        if apply_cloud:
+            layer = rt.where(self.cloud, np.nan, layer)
+        
+        return layer
+    
+    @property
+    def LST(self) -> Raster:
         """
-        Get the Emissivity Band 16 data as a Raster object.
-
-        :param geometry: The target geometry for resampling.
+        Return the Land Surface Temperature (LST) data as a Raster object.
         """
-        image = self.dataset(
-            self.filename_absolute,
-            f"HDFEOS/GRIDS/VIIRS_Grid_Daily_1km_LST21/Data Fields/Emis_16",
-            scale_factor=0.002,
-            offset=0.49,
-            cloud_mask=None,
-            apply_cloud_mask=False
-        )
+        return self.read("LST", scale=1, offset=0)
 
-        if np.all(np.isnan(image)):
-            raise ValueError("blank emissivity band 16 image")
-
-        if geometry is not None:
-            image = image.to_geometry(geometry)
-
-        return image
-
-    Emis_16 = property(get_Emis_16)
-
-    def get_LST_1KM(self, geometry: RasterGeometry = None) -> Raster:
-        """
-        Get the Land Surface Temperature (LST) 1KM data as a Raster object.
-
-        :param geometry: The target geometry for resampling.
-        """
-        image = self.dataset(
-            self.filename_absolute,
-            f"HDFEOS/GRIDS/VIIRS_Grid_Daily_1km_LST21/Data Fields/LST_1KM",
-            scale_factor=0.02,
-            offset=0.0,
-            fill=0,
-            lower_range=7500,
-            upper_range=65535,
-            cloud_mask=None,
-            apply_cloud_mask=True
-        )
-
-        if np.all(np.isnan(image)):
-            raise ValueError("blank LST 1km image")
-
-        if geometry is not None:
-            image = image.to_geometry(geometry)
-
-        return image
-
-    LST_1KM = property(get_LST_1KM)
-
-    ST_K = LST_1KM
+    ST_K = LST
 
     @property
-    def ST_C(self):
+    def ST_C(self) -> Raster:
         """
-        Return the Land Surface Temperature in Celsius.
+        Return the Land Surface Temperature in Celsius as a Raster object.
         """
-        return self.ST_K - 273.15
+        return self.read("LST", scale=1, offset=-273.15)
 
-    def get_View_Angle(self, geometry: RasterGeometry = None) -> Raster:
+    @property
+    def LST_err(self) -> Raster:
         """
-        Get the View Angle data as a Raster object.
-
-        :param geometry: The target geometry for resampling.
+        Return the Land Surface Temperature error data as a Raster object.
         """
-        image = self.dataset(
-            self.filename_absolute,
-            f"HDFEOS/GRIDS/VIIRS_Grid_Daily_1km_LST21/Data Fields/View_Angle",
-            scale_factor=1.0,
-            offset=-65.0,
-            cloud_mask=None,
-            apply_cloud_mask=False
-        )
+        return self.read("LST_err", scale=1, offset=0)
 
-        if np.all(np.isnan(image)):
-            raise ValueError("blank view angle image")
-
-        if geometry is not None:
-            image = image.to_geometry(geometry)
-
-        return image
-
-    View_Angle = property(get_View_Angle)
+    @property
+    def Emis_I5(self) -> Raster:
+        """
+        Return the emissivity in band I5 as a Raster object.
+        """
+        return self.read("Emis_I5", scale=1, offset=0, upper=1)
+    
+    @property
+    def Emis_I5_err(self) -> Raster:
+        """
+        Return the emissivity error in band I5 as a Raster object.
+        """
+        return self.read("Emis_I5_err", scale=1, offset=0)
+    
+    @property
+    def View_angle(self) -> Raster:
+        """
+        Return the view angle data as a Raster object.
+        """
+        return self.read("View_angle", scale=1, offset=0)
